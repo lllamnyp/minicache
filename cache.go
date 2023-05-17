@@ -62,6 +62,7 @@ func New(options ...OptionFunc) *cache {
 		}
 	}
 	c.root = newRoute()
+	c.root.cacheRules = c.cacheRules
 	c.cache = make(map[string]*cacheEntry)
 	return c
 }
@@ -79,11 +80,13 @@ func (r *route) getOrCreateChild(segment string) *route {
 	if segment == "*" {
 		if r.dynamicChild == nil {
 			r.dynamicChild = newRoute()
+			r.dynamicChild.cacheRules = r.cacheRules
 		}
 		return r.dynamicChild
 	}
 	if _, ok := r.staticChildren[segment]; !ok {
 		r.staticChildren[segment] = newRoute()
+		r.staticChildren[segment].cacheRules = r.cacheRules
 	}
 	return r.staticChildren[segment]
 }
@@ -133,12 +136,14 @@ func (c *cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (c *cache) request(r *route, p []string) ([]byte, error) {
 	c.Lock()
 	if c.cache[toCanonicalPath(p)] == nil {
+		c.l.Info("cache miss", "key", p)
 		entry := &cacheEntry{}
 		c.cache[toCanonicalPath(p)] = entry
 		c.Unlock()
 		entry.Lock()
 		var err error
 		if entry.value, err = r.handler(p); err != nil {
+			c.l.Error(err, "failed to populate cache", "key", p)
 			entry.value = nil
 			entry.Unlock()
 			c.Lock()
@@ -147,31 +152,37 @@ func (c *cache) request(r *route, p []string) ([]byte, error) {
 			return nil, err
 		}
 		entry.expiry = time.Now().Add(r.cacheRules.ttl)
+		c.l.Info("populated cache", "key", p, "expires-at", entry.expiry.Format(time.RFC3339))
 		entry.Unlock()
 	} else {
 		c.Unlock()
+		c.l.Info("cache hit", "key", p)
 	}
 	c.RLock()
 	entry := c.cache[toCanonicalPath(p)]
 	c.RUnlock()
 	entry.RLock()
+	rValue := entry.value
 	defer entry.RUnlock()
-	if entry.value == nil {
+	if rValue == nil {
+		c.l.Info("empty cache value", "key", p)
 		return nil, errors.New("cache entry found, but no value stored, try again later")
 	}
 	if entry.expiry.Before(time.Now()) {
+		c.l.Info("stale cache entry, will renew", "key", p, "expires-at", entry.expiry.Format(time.RFC3339))
 		go func() {
 			entry.Lock()
 			defer entry.Unlock()
 			newBytes, err := r.handler(p)
 			if err != nil {
+				c.l.Error(err, "cache renewal failed", "key", p)
 				return
 			}
 			entry.value = newBytes
 			entry.expiry = time.Now().Add(r.cacheRules.ttl)
 		}()
 	}
-	return entry.value, nil
+	return rValue, nil
 }
 
 func (c *cache) ListenAndServe(addr string) error {
