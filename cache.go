@@ -104,6 +104,12 @@ func (c *cache) Register(path string, handler HandlerFunc) error {
 	return nil
 }
 
+func (c *cache) RegisterOrDie(path string, handler HandlerFunc) {
+	if err := c.Register(path, handler); err != nil {
+		panic(err)
+	}
+}
+
 func (c *cache) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path, err := fromPath(r.URL.EscapedPath())
 	if err != nil {
