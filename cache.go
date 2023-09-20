@@ -162,7 +162,7 @@ func (c *cache) request(r *route, p []string) ([]byte, error) {
 		entry.Unlock()
 	} else {
 		c.Unlock()
-		c.l.Info("cache hit", "key", p)
+		c.l.V(3).Info("cache hit", "key", p)
 	}
 	c.RLock()
 	entry := c.cache[toCanonicalPath(p)]
